@@ -1,5 +1,5 @@
 # DEVELOPMENT-PROCESS.md
-# Ao-Kin 開発プロセス v1.0
+# Ao-Kin 開発プロセス v1.1
 
 ## 1. 指揮系統
 
@@ -8,9 +8,9 @@ Ryo（最終方針）
   ↓
 Ao（品質責任・運用判断・タスク設計）
   ↓ #ao-kin にタスク指示
-Kin（証拠判定・実行管理・失敗分類）
-  ↓ タスク分解・Claude Code起動
-Claude Code（実装・テスト実行・証拠提出）
+Kin（検証実行・判定・実行管理・失敗分類）
+  ↓ タスク分解・Claude Code起動・独立検証
+Claude Code（実装・commit のみ）
 ```
 
 ## 2. 役割分担
@@ -19,13 +19,13 @@ Claude Code（実装・テスト実行・証拠提出）
 |------|------|------|
 | 方針決定 | Ryo | 優先順位・ゴール・例外承認 |
 | 品質責任 | Ao | タスク設計・デプロイ後検証・受け入れテスト |
-| 証拠判定 | Kin | エビデンス確認・PASS/FAIL判定・再投入判断 |
-| 実装 | Claude Code | コード実装・テスト実行・証拠生成 |
+| 検証・判定 | Kin | テスト実行（exec）・エビデンス生成・PASS/FAIL判定・再投入判断 |
+| 実装 | Claude Code | コード実装・commit・push のみ |
 
 ### 原則
-- **実装者と判定者を分ける**（Claude Codeの自己申告を信用しない）
-- **証拠なしの完了報告は受理しない**
-- **証拠提出は全部必須、精読はリスクベース**
+- **実装者と検証者を構造的に分離する**（Claude Codeは実装のみ、テスト実行はKin）
+- **Claude Codeの自己申告に一切依存しない**（テスト結果はKinが直接取得）
+- **証拠はKinのexecコマンドが機械的に生成する**（実装者が証拠を作らない）
 
 ## 3. タスク指示テンプレート
 
@@ -44,132 +44,108 @@ Claude Code（実装・テスト実行・証拠提出）
 【実装タスク】
 [タスク内容]
 完了条件: [具体的な検証項目]
+実装が完了したらcommit+pushして完了報告してください。
+テスト実行は不要です（Kinが独立検証します）。
 ```
 - 並列数はKinがタスク規模で判断（固定しない）
 - 小タスク: 単体実行、大タスク: Agent Team並列
+- **Claude Codeにテスト実行を指示しない**（検証はKinの責務）
 
-## 4. エビデンス提出ルール
+## 4. 検証フロー（C案: Kin独立検証）
 
-タスク完了後、以下を `~/evidence/<task-name>/` に保存すること。
+### フロー
+```
+1. Claude Code: 実装 → commit → push → 完了報告（commit hashを含める）
+2. Kin: commit hash を受け取る
+3. Kin: exec(background=true) でテストコマンドを非同期実行
+   → pnpm build > ~/evidence/<task>/build.log 2>&1
+   → pnpm test > ~/evidence/<task>/test.log 2>&1
+   → Playwright report は自動生成
+4. Kin: process(poll) で完了を待つ（ブロックしない）
+5. Kin: 終了コードで一次判定（0=PASS, 非0=FAIL）
+6. Kin: stdout/stderr を読んで詳細分類
+7. Kin: 結果を #ao-kin に報告
+```
 
-### 必須
-- `summary.md`（下記テンプレート参照）
-- `diff.patch`（今回タスクで生じた変更差分）
-- `build.log`（ビルド実行時の全出力）
+### なぜこの方式か
+- **テスト結果の改ざんが構造的に不可能**（Kinが直接コマンドを実行）
+- **Claude Codeの申告を一切使わない**（終了コードとstdoutが唯一の証拠）
+- **Kinはexec中ブロックされない**（非同期実行、結果は後で取得）
+- **追加セッション不要**（コスト効率が良い）
 
-### テスト実行時は追加で必須
-- `test.log`（Playwright/Vitest の生ログ）
-- `playwright-report/` または `report-path.txt`（レポートの保存先）
-- `screenshots/`（失敗時必須、成功時はキーポイントのみ任意）
+### エビデンス（Kinのexecが自動生成）
+```
+~/evidence/<task>/
+├── build.log        # pnpm build の全出力（Kinのexecが生成）
+├── test.log         # pnpm test の全出力（Kinのexecが生成）
+├── playwright-report/  # Playwright自動生成
+├── screenshots/     # Playwright失敗時自動生成
+└── summary.md       # Kinが判定後に作成
+```
 
-### summary.md テンプレート
+### summary.md（Kinが作成）
 ```markdown
-# タスク完了報告
+# 検証結果
 
 ## メタデータ
 - タスク: [タスク名]
+- 検証対象commit: [hash]
 - ブランチ: [branch名]
-- コミット: [hash]
-- 実行時刻: [ISO8601]
-- 実行環境: local
+- 検証時刻: [ISO8601]
 
-## 実装内容
-[変更内容の要約]
-
-## 実行コマンド
+## 検証コマンド
 - pnpm build
-- pnpm test
-- npx playwright test [対象spec]
+- pnpm test / npx playwright test [対象spec]
 
-## 実行したテスト一覧
-- [spec名]: pass/fail
-
-## 結果要約
-- ビルド: PASS / FAIL
-- ユニットテスト: PASS / FAIL / 未実行
-- E2Eテスト: PASS / FAIL / 未実行
+## 結果
+- ビルド: PASS / FAIL（終了コード: [N]）
+- テスト: PASS / FAIL（終了コード: [N]）
 - 全体: PASS / FAIL
 
-## 失敗分析（failがある場合）
-- [spec名]: [失敗理由の1行要約]
+## 失敗分析（FAILの場合）
+- [spec名]: [失敗理由]
 - 分類: 新規回帰 / 既知flaky / 無関係
-
-## 要判断事項（あれば）
-[Kinへの質問・エスカレーション事項]
 ```
 
-### エビデンスの保管
-- **原本**: kin VM上の `~/evidence/<task-name>/`（ローカル保持）
-- **参照/蓄積**: Second Brain API（短期は `/api/notes`、中期で専用エンドポイント）
-- **保持期間**: 30日でアーカイブ（要検討）
-- **容量対策**: 成功時は軽量（サマリ+差分）、失敗時は厚め（生ログ+スクショ+レポート）
-
-## 5. Kin の受理条件
-
-以下をすべて満たす場合のみ PASS 判定：
-- [ ] 実装サマリが確認できる
-- [ ] `diff.patch` で変更内容が確認できる
-- [ ] `build.log` がある
-- [ ] 実行したテスト一覧がある
-- [ ] テストログ（`test.log`）がある
-- [ ] 失敗時は failure evidence（スクショ/trace）がある
-- [ ] Playwright report の場所が明記されている
-- [ ] サマリと証拠が矛盾していない
-
-### 不足時
-**「証拠不足。再提出してください」** → 差し戻し
+## 5. 判定ルール
 
 ### 判定分類
 | 判定 | 意味 | アクション |
 |------|------|-----------|
-| PASS | 全証拠OK、テスト通過 | 次のタスクへ |
-| FAIL（新規回帰） | 今回の変更が原因 | FIXタスク投入 |
+| PASS | ビルド+テスト通過 | 次のタスクへ |
+| FAIL（新規回帰） | 今回の変更が原因 | FIXタスクをClaude Codeに投入 |
 | FAIL（既知flaky） | 既存の不安定テスト | 既知失敗リストに記録、タスク自体はPASS扱い |
 | FAIL（無関係） | 変更と無関係の失敗 | 原因調査タスクを別途起票 |
-| 証拠不足 | 必要エビデンスが欠けている | 再提出 |
+| 検証失敗 | テスト実行自体がエラー | 環境問題として調査 |
 
 ### エスカレーション
 - 3連続FAIL → Aoへエスカレーション
 - 不可逆変更 → Ryoへエスカレーション
 
-## 6. Kin の確認優先順位
+## 6. Verification レベル
 
-### 必須確認（毎回）
-- git diff
-- build結果
-- Playwright pass/fail一覧
-- failure screenshot / trace
-
-### 必要時のみ深掘り
-- 生ログ全文
-- 成功時スクショ全件
-- HTML report全文巡回
-- buildログ全文
-
-## 7. Verification レベル
-
-| レベル | 内容 | 使いどころ |
+| レベル | Kinが実行するコマンド | 使いどころ |
 |--------|------|-----------|
-| Level 1: 軽量 | lint / typecheck / 関連unit | 小タスク（README更新等） |
-| Level 2: 関連E2E | 変更箇所に近いspecだけ | 中タスク（機能修正等） |
-| Level 3: フルE2E | 全E2Eテスト実行 | 大タスク・PR前・節目 |
+| Level 1: 軽量 | `pnpm build` | 小タスク（README更新、設定変更等） |
+| Level 2: 関連E2E | `pnpm build && npx playwright test [関連spec]` | 中タスク（機能修正等） |
+| Level 3: フルE2E | `pnpm build && pnpm test` | 大タスク・PR前・節目 |
 
 - モック禁止は全レベルで維持
 - レベル判断はKinがタスク規模で決定
 
-## 8. 通知
+## 7. 通知
 
 - タスク完了/失敗 → Discord #ao-kin に `[kin-server]` プレフィックス付きで自動通知
 - エスカレーション → Ryo にメンション
 
-## 9. 移行計画
+## 8. 移行計画
 
 1. **Phase 1（現在）**: watch-acpx.sh + Discord通知で運用
-2. **Phase 2**: CLAUDE.mdにエビデンスルール追記、Claude Codeが証拠生成開始
-3. **Phase 3**: Kin が sessions_spawn で Claude Code 起動、watch-acpx.sh を凍結
-4. **移行基準**: 新方式で3タスク連続成功したら旧方式を凍結
+2. **Phase 2**: Kin が sessions_spawn で Claude Code 起動、C案検証フローを試行
+3. **Phase 3**: 3タスク連続成功したら watch-acpx.sh を凍結、Kin独立検証を主系に
+4. **Phase 4**: Second Brain APIにエビデンス蓄積を追加
 
 ---
 
-*v1.0 — 2026-03-08 作成（Ao + Kin 議論に基づく）*
+*v1.1 — 2026-03-08 更新（C案: Kin独立検証に変更）*
 *Ryo承認待ち*
